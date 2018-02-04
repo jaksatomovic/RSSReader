@@ -11,12 +11,18 @@ import EVReflection
 import Alamofire
 import AlamofireXmlToObjects
 import CoreData
+import UserNotifications
+
+var numberOfStories = [Int]()
+var numberOfNewStories = [Int]()
 
 class HomeController: UITableViewController {
     
     var feedList = [Channel]()
     
     var coreDataModels = [FeedModel]()
+
+    let timedNotificationIdentifier = "timedNotificationIdentifier"
 
     
     private func fetchFeedList() {
@@ -42,6 +48,12 @@ class HomeController: UITableViewController {
     
     let cellId = "cellId"
     
+    func showAlert() {
+        let alert = UIAlertController(title: "Simulation", message: "Press home button, put app in background and in about 30 seconds you will receive local notification", preferredStyle: UIAlertControllerStyle.alert)
+        alert.addAction(UIAlertAction(title: "OK", style: UIAlertActionStyle.cancel, handler: nil))
+        self.present(alert, animated: true, completion: nil)
+    }
+    
     override func viewDidLoad() {
         super.viewDidLoad()
         
@@ -58,7 +70,31 @@ class HomeController: UITableViewController {
         tableView.register(ListCell.self, forCellReuseIdentifier: cellId)
         
         navigationItem.rightBarButtonItem = UIBarButtonItem(image: #imageLiteral(resourceName: "plus").withRenderingMode(.alwaysOriginal), style: .plain, target: self, action: #selector(handleAddFeed))
+        
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "Simulate", style: .plain, target: self, action: #selector(sendNotification))
+
     }
+    
+    @objc func sendNotification() {
+        UNUserNotificationCenter.current().getNotificationSettings { (settings) in
+            if settings.authorizationStatus == .authorized {
+                self.showAlert()
+                self.scheduleNotification()
+            } else {
+                UNUserNotificationCenter.current().requestAuthorization(options: [.sound, .badge, .alert], completionHandler: { (succ, err) in
+                    if let err = err {
+                        print(err)
+                    } else {
+                        self.showAlert()
+                        self.scheduleNotification()
+                    }
+                })
+            }
+        }
+    }
+    
+    
+    
     
     @objc func handleAddFeed() {
         var inputTextField: UITextField?
@@ -84,6 +120,7 @@ class HomeController: UITableViewController {
             do {
                 try context.save()
                 // success
+                self.coreDataModels.append(feed as! FeedModel)
                 self.fetchFeed(url: text)
             } catch let saveErr {
                 print("Failed to save feed:", saveErr)
@@ -176,8 +213,63 @@ extension HomeController {
                 if let result = response.value {
                     guard let channel = result.channel else {return}
                     self.addNewFeedSource(feed: channel)
-                    print(channel)
+                    let count = result.channel?.item.count
+                    print(count as Any)
+                    numberOfStories.append(count!)
                 }
+                self.tableView.reloadData()
+        }
+    }
+    
+    func checkForNewStroies() {
+        print("checking for new stories...")
+        var urls = [String]()
+        let context = CoreDataManager.shared.persistentContainer.viewContext
+        
+        let fetchRequest = NSFetchRequest<FeedModel>(entityName: "FeedModel")
+        
+        do {
+            let feeds = try context.fetch(fetchRequest)
+            feeds.forEach({ (feed) in
+                urls.append(feed.link ?? "")
+            })
+        } catch let fetchErr {
+            print("Failed to fetch feed:", fetchErr)
+        }
+        for url in urls {
+            var index = 0
+            for i in 0..<urls.count {
+                if urls[i] == url {
+                    index = i
+                }
+            }
+            Alamofire.request(url)
+                .responseObject { (response: DataResponse<FeedResponse>) in
+                    if let result = response.value {
+                        guard let items = result.channel?.item else {return}
+                        numberOfNewStories.append(items.count)
+                    }
+                    
+                    if numberOfNewStories.last! > numberOfStories[index] {
+                        self.scheduleNotification()
+                    }
+            }
+        }
+    }
+    
+    
+    func scheduleNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "Hi"
+        content.body = "You have new rss stories"
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 30.0, repeats: false)
+        let notificationRequest = UNNotificationRequest(identifier: timedNotificationIdentifier, content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(notificationRequest) { (error) in
+            if let error = error {
+                print(error)
+            } else {
+                print("notification scheduled")
+            }
         }
     }
     
